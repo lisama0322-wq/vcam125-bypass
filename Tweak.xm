@@ -105,6 +105,23 @@ static CVPixelBufferRef v23_getTestPattern(size_t w, size_t h) {
     return buf;
 }
 
+// v24: save dst color attachments before VT transfer, restore after
+// (Apple BWPhotoEncoder downstream检查 IOSurface 颜色 metadata, VT transfer 可能 strip)
+static void v24_propagateAttachments(CVPixelBufferRef src, CVPixelBufferRef dst) {
+    CFStringRef keys[] = {
+        kCVImageBufferCGColorSpaceKey,
+        kCVImageBufferYCbCrMatrixKey,
+        kCVImageBufferColorPrimariesKey,
+        kCVImageBufferTransferFunctionKey,
+    };
+    for (int i = 0; i < 4; i++) {
+        CFTypeRef v = CVBufferGetAttachment(src, keys[i], NULL);
+        if (v) {
+            CVBufferSetAttachment(dst, keys[i], v, kCVAttachmentMode_ShouldPropagate);
+        }
+    }
+}
+
 static void v23_doReplace(CVPixelBufferRef dst) {
     if (!dst) return;
     size_t w = CVPixelBufferGetWidth(dst);
@@ -119,8 +136,19 @@ static void v23_doReplace(CVPixelBufferRef dst) {
         if (s != noErr) return;
         VTSessionSetProperty(s_xferSession, kVTPixelTransferPropertyKey_ScalingMode, kVTScalingMode_Trim);
     }
+
+    // v24: 备份 dst 原 attachments → VT transfer → 恢复
+    CFDictionaryRef savedAttachments = CVBufferGetAttachments(dst, kCVAttachmentMode_ShouldPropagate);
+    if (savedAttachments) CFRetain(savedAttachments);
+
     VTPixelTransferSessionTransferImage(s_xferSession, src, dst);
-    // src is cached, no release
+
+    if (savedAttachments) {
+        CVBufferSetAttachments(dst, savedAttachments, kCVAttachmentMode_ShouldPropagate);
+        CFRelease(savedAttachments);
+    }
+    // also forward-propagate src→dst as belt+suspenders
+    v24_propagateAttachments(src, dst);
 }
 
 static void r_VC_renderReplacementToPixelBuffer(id self, SEL _cmd, CVPixelBufferRef pb) {
