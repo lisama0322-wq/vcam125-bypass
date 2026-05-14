@@ -71,6 +71,48 @@ static int s_didCFunctionHooks = 0;
 static int s_didObjCSwizzle = 0;
 static const struct mach_header *s_vcamMh = NULL;
 
+// vcam125 globals (offsets from dylib base, found via static reverse)
+//   g_isLicenseValid  byte @ 0x63ab4
+//   g_features        uint32 LE @ 0x63ab8
+//   g_runtime_keys    32 bytes @ 0x63abc
+//   g_expiry          x64 @ 0x63980 (large value, unix-ish)
+static void writeVcamIvars(const struct mach_header *mh) {
+    if (!mh) return;
+    uint8_t *base = (uint8_t *)mh;
+    @try {
+        // g_isLicenseValid = 1
+        *(volatile uint8_t *)(base + 0x63ab4) = 1;
+        // g_features = 0xFFFFFFFF
+        *(volatile uint32_t *)(base + 0x63ab8) = 0xFFFFFFFFU;
+        // g_runtime_keys = 32 bytes of 0x42 (consistent pattern, not 0/random)
+        for (int i = 0; i < 32; i++) {
+            ((volatile uint8_t *)(base + 0x63abc))[i] = 0x42;
+        }
+        // g_expiry (uint64 LE) = 2099 unix
+        *(volatile uint64_t *)(base + 0x63980) = 4070908800ULL;
+    } @catch (NSException *e) {
+        NSLog(@"[v17bypass] writeVcamIvars exception: %@", e);
+    }
+}
+
+// Periodically re-write ivars to enforce in case vcam125 internal code clears them
+static void startIvarEnforcer(void) {
+    static int s_started = 0;
+    if (s_started) return;
+    s_started = 1;
+    dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0);
+    dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, q);
+    dispatch_source_set_timer(timer,
+                              dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC),
+                              100 * NSEC_PER_MSEC,  // every 100ms
+                              10 * NSEC_PER_MSEC);
+    dispatch_source_set_event_handler(timer, ^{
+        if (s_vcamMh) writeVcamIvars(s_vcamMh);
+    });
+    dispatch_resume(timer);
+    NSLog(@"[v17bypass] ivar enforcer timer started (100ms interval)");
+}
+
 // Apply C-function hooks (gate2 + SecKey) — these only need vcam125 dylib loaded
 static void applyCHooks(const struct mach_header *mh) {
     if (s_didCFunctionHooks) return;
@@ -133,14 +175,20 @@ static void onImageLoad(const struct mach_header *mh, intptr_t slide) {
     if (!info.dli_fname) return;
     if (!strstr(info.dli_fname, "vcameracrack")) return;
 
-    NSLog(@"[v16bypass] *** vcameracrack loaded at %p slide=0x%lx path=%s",
+    NSLog(@"[v17bypass] *** vcameracrack loaded at %p slide=0x%lx path=%s",
           mh, (unsigned long)slide, info.dli_fname);
     s_vcamMh = mh;
 
-    // C-function hooks immediately (function pointers, not ObjC)
+    // C-function hooks immediately
     applyCHooks(mh);
 
-    // ObjC class hooks deferred via retry — class may not be registered yet
+    // Write ivars NOW (before vcam125 +load tries to verify license)
+    writeVcamIvars(mh);
+
+    // Start periodic re-write timer to enforce against vcam125's own clearing
+    startIvarEnforcer();
+
+    // ObjC class hooks deferred via retry
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
         tryObjCSwizzle(100);
     });
