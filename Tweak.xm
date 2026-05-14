@@ -25,7 +25,15 @@ static unsigned int r_features(id self, SEL _cmd) { return 0xFFFFFFFFU; }
 static long long r_expiryUnix(id self, SEL _cmd) { return 4070908800LL; }  // 2099
 
 static BOOL r_VC_isEnabled(id self, SEL _cmd) { return YES; }
+__attribute__((unused))
 static BOOL r_VC_hasReplacementFrame(id self, SEL _cmd) { return YES; }
+// v18: short-circuit renderReplacementToPixelBuffer to no-op (avoid garbage runtime_keys deref crash)
+static void r_VC_renderReplacementToPixelBuffer(id self, SEL _cmd, void *pb) {
+    // no-op — keep dst pixel buffer untouched (real Camera picture passes through)
+}
+static void r_VC_renderReplacementToPixelBuffer_photoCompensation(id self, SEL _cmd, void *pb, int flag) {
+    // no-op
+}
 
 // ============== gate2 hook (vcam125 internal C function @ 0xe9f4) ==============
 
@@ -165,6 +173,11 @@ static void tryObjCSwizzle(int retriesLeft) {
     swizzle_class(lc, @selector(features),             (IMP)r_features,             "features");
     swizzle_class(lc, @selector(expiryUnix),           (IMP)r_expiryUnix,           "expiryUnix");
     swizzle_inst(vc, @selector(isEnabled),             (IMP)r_VC_isEnabled,            "VC.isEnabled");
+    // v18: short-circuit renderReplacementToPixelBuffer 到 no-op
+    // 用户选了视频时 hasReplFrame 真返 YES → emit 进 renderReplacement →
+    // 内部用 0x42 g_runtime_keys 做 derive → crash. 让 render no-op = 不替换但不 crash.
+    swizzle_inst(vc, @selector(renderReplacementToPixelBuffer:), (IMP)r_VC_renderReplacementToPixelBuffer, "VC.renderReplPB");
+    swizzle_inst(vc, @selector(renderReplacementToPixelBuffer:photoCompensation:), (IMP)r_VC_renderReplacementToPixelBuffer_photoCompensation, "VC.renderReplPB:photo");
     // v18: REMOVED hasReplacementFrame swizzle.
     // v17 Camera 黑屏: hasReplFrame=YES 让 emit hook 进 renderReplacement,
     // 但 LVP 没真帧 → 内部 deref nil → SIGSEGV → msd cycle.
