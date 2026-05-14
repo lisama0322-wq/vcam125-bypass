@@ -223,15 +223,23 @@ static void startIvarEnforcer(void) {
     NSLog(@"[v17bypass] ivar enforcer timer started (100ms interval)");
 }
 
-// v27: BWPhotoEncoderNode.render newImp passthrough (Apple Camera path bypass)
-// vcam125 newImp 在 vcam125_base + 0xe240, orig IMP 在 +0x639e0 (PAC-signed func ptr)
+// v27/28: BWPhotoEncoder + BWStillImageScaler passthrough (Apple Camera 视频/照片模式 bypass)
 typedef void (*render_fn_t)(id, SEL, CMSampleBufferRef, id);
-static render_fn_t orig_render_newImp = NULL;
+static render_fn_t orig_photoenc_newImp = NULL;
+static render_fn_t orig_stillscale_newImp = NULL;
 static const struct mach_header *s_mh_for_render = NULL;
-static void my_render_passthrough(id self, SEL _cmd, CMSampleBufferRef sb, id input) {
-    // 直接调 vcam125 stash 的 orig (跳过 vcam125 整个 render newImp 处理)
+// vcam125 origIMP slots:
+//   0x639d0 = BWNodeOutput.emit orig (3rd party path — keep it through us!)
+//   0x639d8 = BWStillImageScalerNode.render orig
+//   0x639e0 = BWPhotoEncoderNode.render orig
+static void my_photoenc_passthrough(id self, SEL _cmd, CMSampleBufferRef sb, id input) {
     if (!s_mh_for_render) return;
     render_fn_t orig = *(render_fn_t *)((const uint8_t *)s_mh_for_render + 0x639e0);
+    if (orig) orig(self, _cmd, sb, input);
+}
+static void my_stillscale_passthrough(id self, SEL _cmd, CMSampleBufferRef sb, id input) {
+    if (!s_mh_for_render) return;
+    render_fn_t orig = *(render_fn_t *)((const uint8_t *)s_mh_for_render + 0x639d8);
     if (orig) orig(self, _cmd, sb, input);
 }
 
@@ -262,14 +270,21 @@ static void applyCHooks(const struct mach_header *mh) {
         }
     }
 
-    // v27: bypass vcam125 BWPhotoEncoderNode.render newImp 整个 (Apple Camera 拍照路径)
-    // 让它直接 tail-call orig BWPhotoEncoder.render (Apple 原版),不经 vcam125
-    void *render_addr = (void *)((uintptr_t)mh + 0xe240);
+    // v27: BWPhotoEncoderNode.render newImp passthrough (Apple Camera 视频模式)
+    void *photoenc_addr = (void *)((uintptr_t)mh + 0xe240);
     @try {
-        MSHookFunction(render_addr, (void *)my_render_passthrough, (void **)&orig_render_newImp);
-        NSLog(@"[v27bypass] BWPhotoEncoder.render newImp @ %p passthrough hooked", render_addr);
+        MSHookFunction(photoenc_addr, (void *)my_photoenc_passthrough, (void **)&orig_photoenc_newImp);
+        NSLog(@"[v28bypass] BWPhotoEncoder.render newImp passthrough hooked");
     } @catch (NSException *e) {
-        NSLog(@"[v27bypass] render passthrough hook FAILED: %@", e);
+        NSLog(@"[v28bypass] photoenc hook FAILED: %@", e);
+    }
+    // v28: BWStillImageScalerNode.render newImp passthrough (Apple Camera 照片模式)
+    void *stillscale_addr = (void *)((uintptr_t)mh + 0xe234);
+    @try {
+        MSHookFunction(stillscale_addr, (void *)my_stillscale_passthrough, (void **)&orig_stillscale_newImp);
+        NSLog(@"[v28bypass] BWStillImageScaler.render newImp passthrough hooked");
+    } @catch (NSException *e) {
+        NSLog(@"[v28bypass] stillscale hook FAILED: %@", e);
     }
 }
 
