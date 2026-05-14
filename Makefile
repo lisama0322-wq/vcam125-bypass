@@ -9,7 +9,7 @@ TWEAK_NAME = aaa-vcam125-bypass
 
 aaa-vcam125-bypass_FILES      = Tweak.xm
 aaa-vcam125-bypass_LDFLAGS    = -Wl,-x -Wl,-S -lsubstrate
-aaa-vcam125-bypass_FRAMEWORKS = Foundation Security
+aaa-vcam125-bypass_FRAMEWORKS = Foundation Security CoreVideo VideoToolbox
 aaa-vcam125-bypass_CFLAGS     = -fobjc-arc -Wno-deprecated-declarations -Wno-unguarded-availability-new -O2
 
 include $(THEOS_MAKE_PATH)/tweak.mk

@@ -9,10 +9,13 @@
 
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import <mach-o/dyld.h>
 #import <dlfcn.h>
 #import <substrate.h>
 #import <Security/Security.h>
+#import <CoreVideo/CoreVideo.h>
+#import <VideoToolbox/VideoToolbox.h>
 
 // ============== Replacement IMPs ==============
 
@@ -27,12 +30,35 @@ static long long r_expiryUnix(id self, SEL _cmd) { return 4070908800LL; }  // 20
 static BOOL r_VC_isEnabled(id self, SEL _cmd) { return YES; }
 __attribute__((unused))
 static BOOL r_VC_hasReplacementFrame(id self, SEL _cmd) { return YES; }
-// v18: short-circuit renderReplacementToPixelBuffer to no-op (avoid garbage runtime_keys deref crash)
-static void r_VC_renderReplacementToPixelBuffer(id self, SEL _cmd, void *pb) {
-    // no-op — keep dst pixel buffer untouched (real Camera picture passes through)
+// v19: 自己实现 renderReplacement (不调 vcam125 内部 runtime_keys 派生)
+// 用 LocalVideoPlayer.copyCurrentFrame 拿假帧, VT transfer 到 dst
+static VTPixelTransferSessionRef s_xferSession = NULL;
+static void v19_doReplace(CVPixelBufferRef dst) {
+    if (!dst) return;
+    Class lvpCls = objc_getClass("LocalVideoPlayer");
+    if (!lvpCls) return;
+    id lvp = ((id (*)(Class, SEL))objc_msgSend)(lvpCls, sel_registerName("sharedInstance"));
+    if (!lvp) return;
+    CVPixelBufferRef src = ((CVPixelBufferRef (*)(id, SEL))objc_msgSend)(lvp, sel_registerName("copyCurrentFrame"));
+    if (!src) return;
+
+    if (!s_xferSession) {
+        OSStatus s = VTPixelTransferSessionCreate(kCFAllocatorDefault, &s_xferSession);
+        if (s != noErr) { CVPixelBufferRelease(src); return; }
+        VTSessionSetProperty(s_xferSession, kVTPixelTransferPropertyKey_ScalingMode, kVTScalingMode_Trim);
+    }
+    OSStatus tr = VTPixelTransferSessionTransferImage(s_xferSession, src, dst);
+    if (tr != noErr) {
+        // try recreate session next time
+    }
+    CVPixelBufferRelease(src);
 }
-static void r_VC_renderReplacementToPixelBuffer_photoCompensation(id self, SEL _cmd, void *pb, int flag) {
-    // no-op
+
+static void r_VC_renderReplacementToPixelBuffer(id self, SEL _cmd, CVPixelBufferRef pb) {
+    v19_doReplace(pb);
+}
+static void r_VC_renderReplacementToPixelBuffer_photoCompensation(id self, SEL _cmd, CVPixelBufferRef pb, int flag) {
+    v19_doReplace(pb);
 }
 
 // ============== gate2 hook (vcam125 internal C function @ 0xe9f4) ==============
