@@ -36,6 +36,7 @@ static BOOL r_VC_hasReplacementFrame(id self, SEL _cmd) { return YES; }
 static VTPixelTransferSessionRef s_xferSession = NULL;
 static int s_lvpBootstrapped = 0;
 
+__attribute__((unused))
 static void v22_bootstrapLVP(CVPixelBufferRef dst) {
     if (s_lvpBootstrapped) return;
     Class lvpCls = objc_getClass("LocalVideoPlayer");
