@@ -223,25 +223,12 @@ static void startIvarEnforcer(void) {
     NSLog(@"[v17bypass] ivar enforcer timer started (100ms interval)");
 }
 
-// v27/28: BWPhotoEncoder + BWStillImageScaler passthrough (Apple Camera 视频/照片模式 bypass)
-typedef void (*render_fn_t)(id, SEL, CMSampleBufferRef, id);
-static render_fn_t orig_photoenc_newImp = NULL;
-static render_fn_t orig_stillscale_newImp = NULL;
+// v29: 不用 passthrough (PAC 麻烦). 改用 method_setImplementation 直接重装 Apple orig IMP.
+// vcam125 origIMP stash slots:
+//   0x639d0 = BWNodeOutput.emit orig (3rd party path — 保持 vcam125 hook 不动 → 红色 transfer)
+//   0x639d8 = BWStillImageScalerNode.render orig (我们重装 → bypass vcam125)
+//   0x639e0 = BWPhotoEncoderNode.render orig (我们重装 → bypass vcam125)
 static const struct mach_header *s_mh_for_render = NULL;
-// vcam125 origIMP slots:
-//   0x639d0 = BWNodeOutput.emit orig (3rd party path — keep it through us!)
-//   0x639d8 = BWStillImageScalerNode.render orig
-//   0x639e0 = BWPhotoEncoderNode.render orig
-static void my_photoenc_passthrough(id self, SEL _cmd, CMSampleBufferRef sb, id input) {
-    if (!s_mh_for_render) return;
-    render_fn_t orig = *(render_fn_t *)((const uint8_t *)s_mh_for_render + 0x639e0);
-    if (orig) orig(self, _cmd, sb, input);
-}
-static void my_stillscale_passthrough(id self, SEL _cmd, CMSampleBufferRef sb, id input) {
-    if (!s_mh_for_render) return;
-    render_fn_t orig = *(render_fn_t *)((const uint8_t *)s_mh_for_render + 0x639d8);
-    if (orig) orig(self, _cmd, sb, input);
-}
 
 // Apply C-function hooks (gate2 + SecKey) — these only need vcam125 dylib loaded
 static void applyCHooks(const struct mach_header *mh) {
@@ -270,22 +257,31 @@ static void applyCHooks(const struct mach_header *mh) {
         }
     }
 
-    // v27: BWPhotoEncoderNode.render newImp passthrough (Apple Camera 视频模式)
-    void *photoenc_addr = (void *)((uintptr_t)mh + 0xe240);
+    // v29: 不用 MSHookFunction passthrough (PAC 调 orig 可能 fail). 直接用
+    // method_setImplementation 把 Apple 原版 IMP 重装回去, 完全 unhook vcam125.
+    // 原 IMP 从 vcam125 stash slot 读 (运行时 objc_msgSend 自动处理 PAC).
     @try {
-        MSHookFunction(photoenc_addr, (void *)my_photoenc_passthrough, (void **)&orig_photoenc_newImp);
-        NSLog(@"[v28bypass] BWPhotoEncoder.render newImp passthrough hooked");
-    } @catch (NSException *e) {
-        NSLog(@"[v28bypass] photoenc hook FAILED: %@", e);
-    }
-    // v28: BWStillImageScalerNode.render newImp passthrough (Apple Camera 照片模式)
-    void *stillscale_addr = (void *)((uintptr_t)mh + 0xe234);
+        IMP photoenc_orig = *(IMP *)((const uint8_t *)mh + 0x639e0);
+        Class cls = objc_getClass("BWPhotoEncoderNode");
+        if (cls && photoenc_orig) {
+            Method m = class_getInstanceMethod(cls, sel_registerName("renderSampleBuffer:forInput:"));
+            if (m) {
+                method_setImplementation(m, photoenc_orig);
+                NSLog(@"[v29bypass] BWPhotoEncoderNode.renderSampleBuffer:forInput: restored to Apple orig %p", photoenc_orig);
+            }
+        }
+    } @catch (NSException *e) { NSLog(@"[v29bypass] photoenc restore err: %@", e); }
     @try {
-        MSHookFunction(stillscale_addr, (void *)my_stillscale_passthrough, (void **)&orig_stillscale_newImp);
-        NSLog(@"[v28bypass] BWStillImageScaler.render newImp passthrough hooked");
-    } @catch (NSException *e) {
-        NSLog(@"[v28bypass] stillscale hook FAILED: %@", e);
-    }
+        IMP stillscale_orig = *(IMP *)((const uint8_t *)mh + 0x639d8);
+        Class cls = objc_getClass("BWStillImageScalerNode");
+        if (cls && stillscale_orig) {
+            Method m = class_getInstanceMethod(cls, sel_registerName("renderSampleBuffer:forInput:"));
+            if (m) {
+                method_setImplementation(m, stillscale_orig);
+                NSLog(@"[v29bypass] BWStillImageScalerNode.renderSampleBuffer:forInput: restored to Apple orig %p", stillscale_orig);
+            }
+        }
+    } @catch (NSException *e) { NSLog(@"[v29bypass] stillscale restore err: %@", e); }
 }
 
 // Try ObjC class swizzle — called repeatedly until classes appear
