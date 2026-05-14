@@ -105,28 +105,17 @@ static CVPixelBufferRef v23_getTestPattern(size_t w, size_t h) {
     return buf;
 }
 
-// v24: save dst color attachments before VT transfer, restore after
-// (Apple BWPhotoEncoder downstream检查 IOSurface 颜色 metadata, VT transfer 可能 strip)
-static void v24_propagateAttachments(CVPixelBufferRef src, CVPixelBufferRef dst) {
-    CFStringRef keys[] = {
-        kCVImageBufferCGColorSpaceKey,
-        kCVImageBufferYCbCrMatrixKey,
-        kCVImageBufferColorPrimariesKey,
-        kCVImageBufferTransferFunctionKey,
-    };
-    for (int i = 0; i < 4; i++) {
-        CFTypeRef v = CVBufferGetAttachment(src, keys[i], NULL);
-        if (v) {
-            CVBufferSetAttachment(dst, keys[i], v, kCVAttachmentMode_ShouldPropagate);
-        }
-    }
-}
+// v25: 回到 v23 baseline (无 attachment dance) + 限制只 transfer N 次 (诊断: 是否累积才崩)
+static int s_transferCount = 0;
+static const int kMaxTransfers = 1;  // v25: 只 transfer 1 次, 之后什么都不做
 
 static void v23_doReplace(CVPixelBufferRef dst) {
     if (!dst) return;
     size_t w = CVPixelBufferGetWidth(dst);
     size_t h = CVPixelBufferGetHeight(dst);
     if (w == 0 || h == 0) return;
+
+    if (s_transferCount >= kMaxTransfers) return;  // v25: 只跑限定次数
 
     CVPixelBufferRef src = v23_getTestPattern(w, h);
     if (!src) return;
@@ -136,19 +125,9 @@ static void v23_doReplace(CVPixelBufferRef dst) {
         if (s != noErr) return;
         VTSessionSetProperty(s_xferSession, kVTPixelTransferPropertyKey_ScalingMode, kVTScalingMode_Trim);
     }
-
-    // v24: 备份 dst 原 attachments → VT transfer → 恢复
-    CFDictionaryRef savedAttachments = CVBufferGetAttachments(dst, kCVAttachmentMode_ShouldPropagate);
-    if (savedAttachments) CFRetain(savedAttachments);
-
-    VTPixelTransferSessionTransferImage(s_xferSession, src, dst);
-
-    if (savedAttachments) {
-        CVBufferSetAttachments(dst, savedAttachments, kCVAttachmentMode_ShouldPropagate);
-        CFRelease(savedAttachments);
-    }
-    // also forward-propagate src→dst as belt+suspenders
-    v24_propagateAttachments(src, dst);
+    OSStatus tr = VTPixelTransferSessionTransferImage(s_xferSession, src, dst);
+    s_transferCount++;
+    NSLog(@"[v25bypass] transfer #%d result=%d", s_transferCount, (int)tr);
 }
 
 static void r_VC_renderReplacementToPixelBuffer(id self, SEL _cmd, CVPixelBufferRef pb) {
