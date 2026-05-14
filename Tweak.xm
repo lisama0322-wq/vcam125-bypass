@@ -36,7 +36,7 @@ static BOOL r_VC_hasReplacementFrame(id self, SEL _cmd) { return YES; }
 static VTPixelTransferSessionRef s_xferSession = NULL;
 static int s_lvpBootstrapped = 0;
 
-static void v20_bootstrapLVP(CVPixelBufferRef dst) {
+static void v22_bootstrapLVP(CVPixelBufferRef dst) {
     if (s_lvpBootstrapped) return;
     Class lvpCls = objc_getClass("LocalVideoPlayer");
     if (!lvpCls) return;
@@ -47,21 +47,30 @@ static void v20_bootstrapLVP(CVPixelBufferRef dst) {
     if (w == 0 || h == 0) return;
 
     @try {
-        CGSize size = {(CGFloat)w, (CGFloat)h};
-        ((void (*)(id, SEL, CGSize))objc_msgSend)(lvp, sel_registerName("setVideoSize:"), size);
+        // v22: 用 KVC 直接写 ivar (避免 ARM64 ABI struct passing 问题)
+        NSNumber *wNum = [NSNumber numberWithUnsignedLong:w];
+        NSNumber *hNum = [NSNumber numberWithUnsignedLong:h];
+        ((void (*)(id, SEL, id, NSString *))objc_msgSend)(
+            lvp, sel_registerName("setValue:forKey:"), wNum, @"_targetWidth");
+        ((void (*)(id, SEL, id, NSString *))objc_msgSend)(
+            lvp, sel_registerName("setValue:forKey:"), hNum, @"_targetHeight");
+
+        // 触发 decode thread + frame timer + 重 load
+        ((void (*)(id, SEL))objc_msgSend)(lvp, sel_registerName("reloadVideo"));
         ((void (*)(id, SEL, NSInteger))objc_msgSend)(lvp, sel_registerName("startDecodingThreadForGeneration:"), (NSInteger)1);
         ((void (*)(id, SEL, NSInteger))objc_msgSend)(lvp, sel_registerName("startFrameTimerForGeneration:"), (NSInteger)1);
         ((void (*)(id, SEL))objc_msgSend)(lvp, sel_registerName("play"));
-        NSLog(@"[v20bypass] LVP bootstrap: setVideoSize %zux%zu + startDecode + play", w, h);
+
+        NSLog(@"[v22bypass] LVP bootstrap: KVC _targetWidth=%zu _targetHeight=%zu + reload + startDecode + play", w, h);
         s_lvpBootstrapped = 1;
     } @catch (NSException *e) {
-        NSLog(@"[v20bypass] LVP bootstrap fail: %@", e);
+        NSLog(@"[v22bypass] LVP bootstrap fail: %@", e);
     }
 }
 
-static void v20_doReplace(CVPixelBufferRef dst) {
+static void v22_doReplace(CVPixelBufferRef dst) {
     if (!dst) return;
-    v20_bootstrapLVP(dst);
+    v22_bootstrapLVP(dst);
 
     Class lvpCls = objc_getClass("LocalVideoPlayer");
     if (!lvpCls) return;
@@ -80,10 +89,10 @@ static void v20_doReplace(CVPixelBufferRef dst) {
 }
 
 static void r_VC_renderReplacementToPixelBuffer(id self, SEL _cmd, CVPixelBufferRef pb) {
-    v20_doReplace(pb);
+    v22_doReplace(pb);
 }
 static void r_VC_renderReplacementToPixelBuffer_photoCompensation(id self, SEL _cmd, CVPixelBufferRef pb, int flag) {
-    v20_doReplace(pb);
+    v22_doReplace(pb);
 }
 
 // ============== gate2 hook (vcam125 internal C function @ 0xe9f4) ==============
