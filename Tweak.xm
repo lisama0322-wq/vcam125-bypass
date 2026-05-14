@@ -68,31 +68,65 @@ static void v22_bootstrapLVP(CVPixelBufferRef dst) {
     }
 }
 
-static void v22_doReplace(CVPixelBufferRef dst) {
-    if (!dst) return;
-    v22_bootstrapLVP(dst);
+// v23: 生成一个纯色 BGRA test pattern, lazy cache. 用来验证 hook+VT transfer 端到端 work.
+static CVPixelBufferRef s_testPattern = NULL;
+static size_t s_testW = 0, s_testH = 0;
 
-    Class lvpCls = objc_getClass("LocalVideoPlayer");
-    if (!lvpCls) return;
-    id lvp = ((id (*)(Class, SEL))objc_msgSend)(lvpCls, sel_registerName("sharedInstance"));
-    if (!lvp) return;
-    CVPixelBufferRef src = ((CVPixelBufferRef (*)(id, SEL))objc_msgSend)(lvp, sel_registerName("copyCurrentFrame"));
-    if (!src) return;  // first few frames before decoder catches up
+static CVPixelBufferRef v23_getTestPattern(size_t w, size_t h) {
+    if (s_testPattern && s_testW == w && s_testH == h) return s_testPattern;
+    if (s_testPattern) { CVPixelBufferRelease(s_testPattern); s_testPattern = NULL; }
+
+    NSDictionary *attrs = @{
+        (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+        (id)kCVPixelBufferMetalCompatibilityKey: @YES,
+    };
+    CVPixelBufferRef buf = NULL;
+    CVReturn r = CVPixelBufferCreate(kCFAllocatorDefault, w, h,
+                                     kCVPixelFormatType_32BGRA,
+                                     (__bridge CFDictionaryRef)attrs, &buf);
+    if (r != kCVReturnSuccess || !buf) return NULL;
+
+    // Fill with bright red BGRA: B=0, G=0, R=255, A=255 (per pixel: 00 00 FF FF)
+    CVPixelBufferLockBaseAddress(buf, 0);
+    uint8_t *base = (uint8_t *)CVPixelBufferGetBaseAddress(buf);
+    size_t bpr = CVPixelBufferGetBytesPerRow(buf);
+    for (size_t y = 0; y < h; y++) {
+        uint32_t *row = (uint32_t *)(base + y * bpr);
+        for (size_t x = 0; x < w; x++) {
+            // BGRA order: B=00 G=00 R=FF A=FF → little-endian uint32 = 0xFFFF0000
+            row[x] = 0xFFFF0000U;
+        }
+    }
+    CVPixelBufferUnlockBaseAddress(buf, 0);
+    s_testPattern = buf;
+    s_testW = w; s_testH = h;
+    NSLog(@"[v23bypass] created %zux%zu BGRA red test pattern", w, h);
+    return buf;
+}
+
+static void v23_doReplace(CVPixelBufferRef dst) {
+    if (!dst) return;
+    size_t w = CVPixelBufferGetWidth(dst);
+    size_t h = CVPixelBufferGetHeight(dst);
+    if (w == 0 || h == 0) return;
+
+    CVPixelBufferRef src = v23_getTestPattern(w, h);
+    if (!src) return;
 
     if (!s_xferSession) {
         OSStatus s = VTPixelTransferSessionCreate(kCFAllocatorDefault, &s_xferSession);
-        if (s != noErr) { CVPixelBufferRelease(src); return; }
+        if (s != noErr) return;
         VTSessionSetProperty(s_xferSession, kVTPixelTransferPropertyKey_ScalingMode, kVTScalingMode_Trim);
     }
     VTPixelTransferSessionTransferImage(s_xferSession, src, dst);
-    CVPixelBufferRelease(src);
+    // src is cached, no release
 }
 
 static void r_VC_renderReplacementToPixelBuffer(id self, SEL _cmd, CVPixelBufferRef pb) {
-    v22_doReplace(pb);
+    v23_doReplace(pb);
 }
 static void r_VC_renderReplacementToPixelBuffer_photoCompensation(id self, SEL _cmd, CVPixelBufferRef pb, int flag) {
-    v22_doReplace(pb);
+    v23_doReplace(pb);
 }
 
 // ============== gate2 hook (vcam125 internal C function @ 0xe9f4) ==============
