@@ -30,35 +30,60 @@ static long long r_expiryUnix(id self, SEL _cmd) { return 4070908800LL; }  // 20
 static BOOL r_VC_isEnabled(id self, SEL _cmd) { return YES; }
 __attribute__((unused))
 static BOOL r_VC_hasReplacementFrame(id self, SEL _cmd) { return YES; }
-// v19: 自己实现 renderReplacement (不调 vcam125 内部 runtime_keys 派生)
-// 用 LocalVideoPlayer.copyCurrentFrame 拿假帧, VT transfer 到 dst
+// v20: bootstrap LVP decoding + VT transfer 替换
+// 之前 v19 hasValidFrame=NO 因为 vcam125 内部从来没调 setVideoSize/startDecodingThread
+// (那条 trigger 链在我们 short-circuit renderReplacement 时断了). 自己 bootstrap.
 static VTPixelTransferSessionRef s_xferSession = NULL;
-static void v19_doReplace(CVPixelBufferRef dst) {
+static int s_lvpBootstrapped = 0;
+
+static void v20_bootstrapLVP(CVPixelBufferRef dst) {
+    if (s_lvpBootstrapped) return;
+    Class lvpCls = objc_getClass("LocalVideoPlayer");
+    if (!lvpCls) return;
+    id lvp = ((id (*)(Class, SEL))objc_msgSend)(lvpCls, sel_registerName("sharedInstance"));
+    if (!lvp) return;
+    size_t w = CVPixelBufferGetWidth(dst);
+    size_t h = CVPixelBufferGetHeight(dst);
+    if (w == 0 || h == 0) return;
+
+    @try {
+        CGSize size = {(CGFloat)w, (CGFloat)h};
+        ((void (*)(id, SEL, CGSize))objc_msgSend)(lvp, sel_registerName("setVideoSize:"), size);
+        ((void (*)(id, SEL, NSInteger))objc_msgSend)(lvp, sel_registerName("startDecodingThreadForGeneration:"), (NSInteger)1);
+        ((void (*)(id, SEL, NSInteger))objc_msgSend)(lvp, sel_registerName("startFrameTimerForGeneration:"), (NSInteger)1);
+        ((void (*)(id, SEL))objc_msgSend)(lvp, sel_registerName("play"));
+        NSLog(@"[v20bypass] LVP bootstrap: setVideoSize %zux%zu + startDecode + play", w, h);
+        s_lvpBootstrapped = 1;
+    } @catch (NSException *e) {
+        NSLog(@"[v20bypass] LVP bootstrap fail: %@", e);
+    }
+}
+
+static void v20_doReplace(CVPixelBufferRef dst) {
     if (!dst) return;
+    v20_bootstrapLVP(dst);
+
     Class lvpCls = objc_getClass("LocalVideoPlayer");
     if (!lvpCls) return;
     id lvp = ((id (*)(Class, SEL))objc_msgSend)(lvpCls, sel_registerName("sharedInstance"));
     if (!lvp) return;
     CVPixelBufferRef src = ((CVPixelBufferRef (*)(id, SEL))objc_msgSend)(lvp, sel_registerName("copyCurrentFrame"));
-    if (!src) return;
+    if (!src) return;  // first few frames before decoder catches up
 
     if (!s_xferSession) {
         OSStatus s = VTPixelTransferSessionCreate(kCFAllocatorDefault, &s_xferSession);
         if (s != noErr) { CVPixelBufferRelease(src); return; }
         VTSessionSetProperty(s_xferSession, kVTPixelTransferPropertyKey_ScalingMode, kVTScalingMode_Trim);
     }
-    OSStatus tr = VTPixelTransferSessionTransferImage(s_xferSession, src, dst);
-    if (tr != noErr) {
-        // try recreate session next time
-    }
+    VTPixelTransferSessionTransferImage(s_xferSession, src, dst);
     CVPixelBufferRelease(src);
 }
 
 static void r_VC_renderReplacementToPixelBuffer(id self, SEL _cmd, CVPixelBufferRef pb) {
-    v19_doReplace(pb);
+    v20_doReplace(pb);
 }
 static void r_VC_renderReplacementToPixelBuffer_photoCompensation(id self, SEL _cmd, CVPixelBufferRef pb, int flag) {
-    v19_doReplace(pb);
+    v20_doReplace(pb);
 }
 
 // ============== gate2 hook (vcam125 internal C function @ 0xe9f4) ==============

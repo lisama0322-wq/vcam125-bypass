@@ -1,6 +1,6 @@
 Package: com.local.vcam125bypass
 Name: vcam125 License Bypass
-Version: 1.0.0-v19
+Version: 1.0.0-v20
 Architecture: iphoneos-arm64
 Depends: firmware (>= 15.0), mobilesubstrate, com.taokk3.qianmian
 Description: vcam125 (千面-VCAM) v15 runtime bypass tweak. 不动 vcam125 dylib 一个字节, 通过 dyld add_image callback 监听 vcam125 加载, 立即 swap +[LicenseCore isLicenseValid/loadPersistedLicense/licenseStatusString/features/expiryUnix] + -[VCamCore isEnabled/hasReplacementFrame] + MSHookFunction gate2@0xe9f4 + SecKeyVerifySignature framework intercept. 0 PAC/codesign 风险, SB 不会卡 boot. 跟 vcam125 v6-v14 patch dylib 字节路径完全不同.
