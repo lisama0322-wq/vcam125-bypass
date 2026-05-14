@@ -223,18 +223,32 @@ static void startIvarEnforcer(void) {
     NSLog(@"[v17bypass] ivar enforcer timer started (100ms interval)");
 }
 
+// v27: BWPhotoEncoderNode.render newImp passthrough (Apple Camera path bypass)
+// vcam125 newImp 在 vcam125_base + 0xe240, orig IMP 在 +0x639e0 (PAC-signed func ptr)
+typedef void (*render_fn_t)(id, SEL, CMSampleBufferRef, id);
+static render_fn_t orig_render_newImp = NULL;
+static const struct mach_header *s_mh_for_render = NULL;
+static void my_render_passthrough(id self, SEL _cmd, CMSampleBufferRef sb, id input) {
+    // 直接调 vcam125 stash 的 orig (跳过 vcam125 整个 render newImp 处理)
+    if (!s_mh_for_render) return;
+    render_fn_t orig = *(render_fn_t *)((const uint8_t *)s_mh_for_render + 0x639e0);
+    if (orig) orig(self, _cmd, sb, input);
+}
+
 // Apply C-function hooks (gate2 + SecKey) — these only need vcam125 dylib loaded
 static void applyCHooks(const struct mach_header *mh) {
     if (s_didCFunctionHooks) return;
     s_didCFunctionHooks = 1;
 
+    s_mh_for_render = mh;
+
     // gate2 (vcam125 dylib base + 0xe9f4)
     void *gate2_addr = (void *)((uintptr_t)mh + 0xe9f4);
     @try {
         MSHookFunction(gate2_addr, (void *)my_gate2, (void **)&orig_gate2);
-        NSLog(@"[v16bypass] gate2 @ %p hooked", gate2_addr);
+        NSLog(@"[v27bypass] gate2 @ %p hooked", gate2_addr);
     } @catch (NSException *e) {
-        NSLog(@"[v16bypass] gate2 hook FAILED: %@", e);
+        NSLog(@"[v27bypass] gate2 hook FAILED: %@", e);
     }
 
     // SecKeyVerifySignature framework hook
@@ -242,10 +256,20 @@ static void applyCHooks(const struct mach_header *mh) {
     if (sec_ptr && !orig_SecKeyVerifySig) {
         @try {
             MSHookFunction(sec_ptr, (void *)my_SecKeyVerifySig, (void **)&orig_SecKeyVerifySig);
-            NSLog(@"[v16bypass] SecKeyVerifySignature hooked");
+            NSLog(@"[v27bypass] SecKeyVerifySignature hooked");
         } @catch (NSException *e) {
-            NSLog(@"[v16bypass] SecKeyVerifySig hook FAILED: %@", e);
+            NSLog(@"[v27bypass] SecKeyVerifySig hook FAILED: %@", e);
         }
+    }
+
+    // v27: bypass vcam125 BWPhotoEncoderNode.render newImp 整个 (Apple Camera 拍照路径)
+    // 让它直接 tail-call orig BWPhotoEncoder.render (Apple 原版),不经 vcam125
+    void *render_addr = (void *)((uintptr_t)mh + 0xe240);
+    @try {
+        MSHookFunction(render_addr, (void *)my_render_passthrough, (void **)&orig_render_newImp);
+        NSLog(@"[v27bypass] BWPhotoEncoder.render newImp @ %p passthrough hooked", render_addr);
+    } @catch (NSException *e) {
+        NSLog(@"[v27bypass] render passthrough hook FAILED: %@", e);
     }
 }
 
