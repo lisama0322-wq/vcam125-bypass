@@ -105,17 +105,14 @@ static CVPixelBufferRef v23_getTestPattern(size_t w, size_t h) {
     return buf;
 }
 
-// v25: 回到 v23 baseline (无 attachment dance) + 限制只 transfer N 次 (诊断: 是否累积才崩)
-static int s_transferCount = 0;
-static const int kMaxTransfers = 1;  // v25: 只 transfer 1 次, 之后什么都不做
-
+// v26: 3rd party / 网页 OK (BWNodeOutput.emit, photoFlag=0). Apple Camera 黑 (BWPhotoEncoder, photoFlag=1).
+// 所以 photoFlag=1 路径不 transfer (Apple Camera 显示真画面不黑屏).
+// 3rd party 路径正常 transfer (看到假画面).
 static void v23_doReplace(CVPixelBufferRef dst) {
     if (!dst) return;
     size_t w = CVPixelBufferGetWidth(dst);
     size_t h = CVPixelBufferGetHeight(dst);
     if (w == 0 || h == 0) return;
-
-    if (s_transferCount >= kMaxTransfers) return;  // v25: 只跑限定次数
 
     CVPixelBufferRef src = v23_getTestPattern(w, h);
     if (!src) return;
@@ -125,15 +122,18 @@ static void v23_doReplace(CVPixelBufferRef dst) {
         if (s != noErr) return;
         VTSessionSetProperty(s_xferSession, kVTPixelTransferPropertyKey_ScalingMode, kVTScalingMode_Trim);
     }
-    OSStatus tr = VTPixelTransferSessionTransferImage(s_xferSession, src, dst);
-    s_transferCount++;
-    NSLog(@"[v25bypass] transfer #%d result=%d", s_transferCount, (int)tr);
+    VTPixelTransferSessionTransferImage(s_xferSession, src, dst);
 }
 
 static void r_VC_renderReplacementToPixelBuffer(id self, SEL _cmd, CVPixelBufferRef pb) {
+    // 3rd party / 网页 path (BWNodeOutput.emit, photoCompensation=0)
     v23_doReplace(pb);
 }
 static void r_VC_renderReplacementToPixelBuffer_photoCompensation(id self, SEL _cmd, CVPixelBufferRef pb, int flag) {
+    // v26: Apple Camera (flag=1) 路径下 BWPhotoEncoder.render orig 对 modified dst 敏感
+    // → 黑屏. 跳过 transfer 让 Apple Camera 显示真画面 (no crash, no replacement).
+    // 3rd party 应该不会到这里 (它走 renderReplacementToPixelBuffer:, 不带 flag)
+    if (flag) return;
     v23_doReplace(pb);
 }
 
