@@ -165,7 +165,12 @@ static void tryObjCSwizzle(int retriesLeft) {
     swizzle_class(lc, @selector(features),             (IMP)r_features,             "features");
     swizzle_class(lc, @selector(expiryUnix),           (IMP)r_expiryUnix,           "expiryUnix");
     swizzle_inst(vc, @selector(isEnabled),             (IMP)r_VC_isEnabled,            "VC.isEnabled");
-    swizzle_inst(vc, @selector(hasReplacementFrame),   (IMP)r_VC_hasReplacementFrame,  "VC.hasReplacementFrame");
+    // v18: REMOVED hasReplacementFrame swizzle.
+    // v17 Camera 黑屏: hasReplFrame=YES 让 emit hook 进 renderReplacement,
+    // 但 LVP 没真帧 → 内部 deref nil → SIGSEGV → msd cycle.
+    // 让它返实际值: 没 fake video 时 NO → emit hook 走原图 path 不 crash.
+    // 用户在 vcam125 UI 选视频后 LVP 自然有帧, hasReplFrame 真实返 YES.
+    // swizzle_inst(vc, @selector(hasReplacementFrame), (IMP)r_VC_hasReplacementFrame, "VC.hasReplacementFrame");
     NSLog(@"[v16bypass] *** ObjC swizzle complete");
 }
 
