@@ -104,8 +104,8 @@ static void tryObjCSwizzle(int retriesLeft) {
     Class vc = objc_getClass("VCamCore");
     if (!lc || !vc) {
         if (retriesLeft <= 0) {
-            NSLog(@"[v16bypass] gave up swizzle: lc=%p vc=%p (classes never appeared after 100 retries)",
-                  (void*)lc, (void*)vc);
+            NSLog(@"[v16bypass] gave up swizzle: lc=%@ vc=%@ (classes never appeared after 100 retries)",
+                  lc, vc);
             return;
         }
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC),
