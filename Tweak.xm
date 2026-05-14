@@ -227,20 +227,14 @@ static void startIvarEnforcer(void) {
 // + 加 BWStillImageScaler passthrough (修 photo mode)
 typedef void (*render_fn_t)(id, SEL, CMSampleBufferRef, id);
 static render_fn_t orig_photoenc_newImp = NULL;
-static render_fn_t orig_stillscale_newImp = NULL;
 static const struct mach_header *s_mh_for_render = NULL;
 // vcam125 stash slots:
-//   0x639d0 = BWNodeOutput.emit orig (保持 vcam125 hook 不动 → 3rd party 红色)
-//   0x639d8 = BWStillImageScalerNode.render orig (passthrough → photo mode 修)
-//   0x639e0 = BWPhotoEncoderNode.render orig (passthrough → video mode 已 work)
+//   0x639d0 = BWNodeOutput.emit orig (保持 vcam125 hook → 3rd party 红色)
+//   0x639d8 = BWStillImageScalerNode.render orig (v31 用 method_setImpl 重装)
+//   0x639e0 = BWPhotoEncoderNode.render orig (MSHookFunction passthrough)
 static void my_photoenc_passthrough(id self, SEL _cmd, CMSampleBufferRef sb, id input) {
     if (!s_mh_for_render) return;
     render_fn_t orig = *(render_fn_t *)((const uint8_t *)s_mh_for_render + 0x639e0);
-    if (orig) orig(self, _cmd, sb, input);
-}
-static void my_stillscale_passthrough(id self, SEL _cmd, CMSampleBufferRef sb, id input) {
-    if (!s_mh_for_render) return;
-    render_fn_t orig = *(render_fn_t *)((const uint8_t *)s_mh_for_render + 0x639d8);
     if (orig) orig(self, _cmd, sb, input);
 }
 
@@ -271,17 +265,14 @@ static void applyCHooks(const struct mach_header *mh) {
         }
     }
 
-    // v30: BWPhotoEncoder + BWStillImageScaler passthrough (回到 v28 work 的方式)
+    // v31: 只 MSHookFunction BWPhotoEncoder (v28 work 的方式)
+    // BWStillImageScaler 0xe234 不能 MSHookFunction — 与 0xe240 间距 12B, trampoline 16B 会重叠崩
+    // 改在 tryObjCSwizzle 延迟 retry 里 method_setImplementation 替换 (vcam125 +load 完成后)
     void *photoenc_addr = (void *)((uintptr_t)mh + 0xe240);
     @try {
         MSHookFunction(photoenc_addr, (void *)my_photoenc_passthrough, (void **)&orig_photoenc_newImp);
-        NSLog(@"[v30bypass] BWPhotoEncoder.render newImp passthrough hooked");
-    } @catch (NSException *e) { NSLog(@"[v30bypass] photoenc hook fail: %@", e); }
-    void *stillscale_addr = (void *)((uintptr_t)mh + 0xe234);
-    @try {
-        MSHookFunction(stillscale_addr, (void *)my_stillscale_passthrough, (void **)&orig_stillscale_newImp);
-        NSLog(@"[v30bypass] BWStillImageScaler.render newImp passthrough hooked");
-    } @catch (NSException *e) { NSLog(@"[v30bypass] stillscale hook fail: %@", e); }
+        NSLog(@"[v31bypass] BWPhotoEncoder.render newImp passthrough hooked");
+    } @catch (NSException *e) { NSLog(@"[v31bypass] photoenc hook fail: %@", e); }
 }
 
 // Try ObjC class swizzle — called repeatedly until classes appear
@@ -310,6 +301,23 @@ static void tryObjCSwizzle(int retriesLeft) {
     swizzle_class(lc, @selector(features),             (IMP)r_features,             "features");
     swizzle_class(lc, @selector(expiryUnix),           (IMP)r_expiryUnix,           "expiryUnix");
     swizzle_inst(vc, @selector(isEnabled),             (IMP)r_VC_isEnabled,            "VC.isEnabled");
+
+    // v31: 此时 vcam125 +load 已完成 (我们 retry 等 class 出现 = vcam125 init done).
+    // 从 vcam125 stash slot +0x639d8 读 BWStillImageScaler.render Apple orig, 重装回 class.
+    // 不能 MSHookFunction 0xe234 因与 0xe240 trampoline 重叠.
+    if (s_mh_for_render) {
+        @try {
+            IMP stillscale_orig = *(IMP *)((const uint8_t *)s_mh_for_render + 0x639d8);
+            Class scaleCls = objc_getClass("BWStillImageScalerNode");
+            if (scaleCls && stillscale_orig) {
+                Method m = class_getInstanceMethod(scaleCls, sel_registerName("renderSampleBuffer:forInput:"));
+                if (m) {
+                    method_setImplementation(m, stillscale_orig);
+                    NSLog(@"[v31bypass] BWStillImageScalerNode.render restored to Apple orig %p", stillscale_orig);
+                }
+            }
+        } @catch (NSException *e) { NSLog(@"[v31bypass] stillscale restore err: %@", e); }
+    }
     // 我们替换了 renderReplacement → 强制 emit hook 调我们的 (vcam125 原版崩)
     swizzle_inst(vc, @selector(renderReplacementToPixelBuffer:), (IMP)r_VC_renderReplacementToPixelBuffer, "VC.renderReplPB");
     swizzle_inst(vc, @selector(renderReplacementToPixelBuffer:photoCompensation:), (IMP)r_VC_renderReplacementToPixelBuffer_photoCompensation, "VC.renderReplPB:photo");
