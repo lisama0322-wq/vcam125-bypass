@@ -224,17 +224,13 @@ static void tryObjCSwizzle(int retriesLeft) {
     swizzle_class(lc, @selector(features),             (IMP)r_features,             "features");
     swizzle_class(lc, @selector(expiryUnix),           (IMP)r_expiryUnix,           "expiryUnix");
     swizzle_inst(vc, @selector(isEnabled),             (IMP)r_VC_isEnabled,            "VC.isEnabled");
-    // v18: short-circuit renderReplacementToPixelBuffer 到 no-op
-    // 用户选了视频时 hasReplFrame 真返 YES → emit 进 renderReplacement →
-    // 内部用 0x42 g_runtime_keys 做 derive → crash. 让 render no-op = 不替换但不 crash.
+    // 我们替换了 renderReplacement → 强制 emit hook 调我们的 (vcam125 原版崩)
     swizzle_inst(vc, @selector(renderReplacementToPixelBuffer:), (IMP)r_VC_renderReplacementToPixelBuffer, "VC.renderReplPB");
     swizzle_inst(vc, @selector(renderReplacementToPixelBuffer:photoCompensation:), (IMP)r_VC_renderReplacementToPixelBuffer_photoCompensation, "VC.renderReplPB:photo");
-    // v18: REMOVED hasReplacementFrame swizzle.
-    // v17 Camera 黑屏: hasReplFrame=YES 让 emit hook 进 renderReplacement,
-    // 但 LVP 没真帧 → 内部 deref nil → SIGSEGV → msd cycle.
-    // 让它返实际值: 没 fake video 时 NO → emit hook 走原图 path 不 crash.
-    // 用户在 vcam125 UI 选视频后 LVP 自然有帧, hasReplFrame 真实返 YES.
-    // swizzle_inst(vc, @selector(hasReplacementFrame), (IMP)r_VC_hasReplacementFrame, "VC.hasReplacementFrame");
+    // v21: 重新加 hasReplacementFrame=YES, 强制 emit hook 调到我们的 renderReplacement
+    // (v18-v20 移除让 emit hook 在 step 6 bail, 我们 hook 永远没机会跑 → chicken-egg
+    // LVP 永远不解码). 现在我们的 renderReplacement 已经替换 vcam125 原版 → 调进来不会崩.
+    swizzle_inst(vc, @selector(hasReplacementFrame), (IMP)r_VC_hasReplacementFrame, "VC.hasReplacementFrame");
     NSLog(@"[v16bypass] *** ObjC swizzle complete");
 }
 
